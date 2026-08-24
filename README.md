@@ -349,10 +349,10 @@ Per-episode limits in seconds. One episode is a single role invocation, not the 
 
 | Field | Default | Description |
 |---|---|---|
-| `manager` | `600` | Planning the next step. |
+| `manager` | `300` | Planning the next step. |
 | `gui_executor` | `1800` | Executing a GUI/visual subtask. |
 | `cli_executor` | `1800` | Executing a CLI/non-GUI subtask. |
-| `auditor` | `600` | Verifying a subtask. Applies to both auditors. |
+| `auditor` | `300` | Verifying a subtask. Applies to both auditors. |
 
 ##### `[run.roles.*]`
 

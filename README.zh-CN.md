@@ -350,10 +350,10 @@ lh-harness check-update
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `manager` | `600` | 规划下一步。 |
+| `manager` | `300` | 规划下一步。 |
 | `gui_executor` | `1800` | 执行 GUI/视觉子任务。 |
 | `cli_executor` | `1800` | 执行 CLI/非 GUI 子任务。 |
-| `auditor` | `600` | 验收子任务，两个 auditor 共用。 |
+| `auditor` | `300` | 验收子任务，两个 auditor 共用。 |
 
 ##### `[run.roles.*]`
 
