@@ -31,6 +31,11 @@ TERMINAL_STATUSES = frozenset({
     "incomplete",
 })
 
+# The deliberate, resumable manager/auditor outcomes.  The CLI maps every
+# non-completed run to a non-zero exit, so a non-zero process exit is not
+# evidence of a crash for these two: the persisted report is the authority.
+RESUMABLE_OUTCOMES = frozenset({"blocked", "incomplete"})
+
 # ``creating`` is written before the worker is spawned.  It belongs here so a
 # run that died inside the launch transaction is reconciled as an interrupted
 # active run instead of lingering in a state that is neither active nor

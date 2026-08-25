@@ -39,6 +39,7 @@ from .lifecycle import (
     ACTIVE_STATUSES,
     MAX_RESUME_EPOCH,
     RESUME_EPOCH_KEY,
+    RESUMABLE_OUTCOMES,
     TERMINAL_STATUSES,
     canonical_lifecycle_status,
     is_terminal_status,
@@ -454,10 +455,12 @@ def _terminal_status_for_exit(
     """Derive process lifecycle status and preserve the audit/report status.
 
     A zero exit code is not enough to claim success: the manager must have
-    written a successful report.  Conversely, every positive non-zero exit is
-    a worker failure even if a partial report happens to say ``complete``.
-    Only an explicit operator stop/abort is a cancellation; an unsolicited
-    signal is treated as a failure/crash.
+    written a successful report.  Conversely, a non-zero exit is a worker
+    failure unless the worker persisted one of the deliberate resumable
+    outcomes (``blocked``/``incomplete``), for which the CLI exits non-zero
+    by design (``cli.py`` maps every non-completed run to exit 1).  Only an
+    explicit operator stop/abort is a cancellation; an unsolicited signal is
+    treated as a failure/crash.
     """
 
     action = str(requested_action or "").strip().lower()
@@ -466,13 +469,23 @@ def _terminal_status_for_exit(
         return "cancelled", report_status
     if returncode is None:
         return "running", report_status
-    if returncode != 0:
-        return "failed", report_status
     # ``complete``/``completed`` is a claim about the manager's audit result,
     # not proof by itself.  The worker protocol explicitly carries the
     # boolean completion authority; accepting a missing/false value would let
     # a truncated or hand-written report make a clean process look successful.
+    # Checked before the exit code so the same authority rule decides both
+    # exit paths.
     if _missing_completion_evidence(report, report_status):
+        return "failed", report_status
+    if returncode != 0:
+        # The CLI exits non-zero for every non-completed run, so a non-zero
+        # exit is not by itself evidence of a crash.  A persisted final
+        # report with a deliberate resumable outcome is the audit result it
+        # says it is; anything else (no report, a crash report's
+        # ``failed``/``cancelled``, or a success claim from a process that
+        # died abnormally) stays a failure.
+        if report_status in RESUMABLE_OUTCOMES:
+            return report_status, report_status
         return "failed", report_status
     if report_status in TERMINAL_STATUSES:
         return report_status, report_status
