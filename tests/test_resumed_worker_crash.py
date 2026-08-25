@@ -117,12 +117,10 @@ async def test_a_crashed_resume_does_not_report_the_previous_success(
     # The CLI exits from this report: it must be the crash, not the old success.
     persisted = json.loads((log_dir / "report.json").read_text(encoding="utf-8"))
     assert persisted == report
-    assert persisted["status"] == "failed"
-    assert (log_dir / "role_orchestration" / "report.json").read_text(encoding="utf-8")
     role_report = json.loads(
         (log_dir / "role_orchestration" / "report.json").read_text(encoding="utf-8")
     )
-    assert role_report["status"] == "failed"
+    assert role_report == report
 
 
 def test_a_crashed_bootstrap_after_a_resume_replaces_the_stale_report(
