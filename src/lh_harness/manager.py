@@ -74,6 +74,10 @@ _MAX_SAVED_TRAJECTORY_BYTES = 16 * 1024 * 1024
 _MAX_FAILURE_REPORT_BYTES = 1 * 1024 * 1024
 _MAX_FAILURE_EVENTS_BYTES = 4 * 1024 * 1024
 _MAX_FAILURE_EVENT_RECORDS = 50_000
+# Terminal report statuses.  A worker that resumes in place reuses its run
+# directory, so this is also how the crash path recognises a report that still
+# belongs to the previous generation.
+_TERMINAL_REPORT_STATUSES = {"complete", "completed", "cancelled", "failed", "blocked", "incomplete"}
 
 
 def _invalid_completion_feedback(language: str) -> str:
@@ -149,6 +153,7 @@ async def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
             exc=exc,
             abort_reason="worker_cancelled",
             progress=run_progress,
+            resumed=bool(kwargs.get("resume", False)),
         )
     except BaseException as exc:  # worker boundary: persist even non-Exception failures
         # KeyboardInterrupt/SystemExit are intentionally converted to a
@@ -162,6 +167,7 @@ async def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
             exc=exc,
             abort_reason="worker_exception",
             progress=run_progress,
+            resumed=bool(kwargs.get("resume", False)),
         )
 
 
@@ -998,6 +1004,9 @@ async def _run_impl(
     )
     _write_local(role_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
     _write_local(log_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
+    # The crash path uses this stamp to tell this generation's report apart
+    # from a terminal report a resumed generation inherited from its run dir.
+    _write_generation_stamp(log_dir)
     transcript = format_management_history(rounds, include_empty=True, max_chars=200_000)
     _write_local(role_dir / "orchestration_transcript.txt", transcript)
     _merge_episode_logs(log_dir)
@@ -1625,6 +1634,34 @@ def _read_local_bounded(path: Path, max_bytes: int, *, tail: bool = False) -> st
                 pass
 
 
+def _write_generation_stamp(log_dir: Path) -> None:
+    """Record this worker's pid beside the report it just wrote.
+
+    A supervised in-place resume reuses the run directory, so a stale
+    ``report.json`` from the previous generation can still be on disk when the
+    new generation crashes.  The stamp is what lets the crash path tell that
+    inherited report apart from one this generation actually produced.
+    """
+
+    try:
+        _write_local(log_dir / "report_generation.txt", str(os.getpid()))
+    except OSError:
+        pass
+
+
+def _report_is_current_generation(log_dir: Path) -> bool:
+    """Whether the on-disk report was produced by this worker process.
+
+    The stamp is only written next to a report this process itself just
+    wrote, so a matching stamp is positive proof of authorship.  A missing or
+    unreadable stamp means the report predates this generation (the run was
+    resumed in place), which on the crash path must be replaced by the crash.
+    """
+
+    stamp = _read_local_bounded(log_dir / "report_generation.txt", 64)
+    return stamp is not None and stamp.strip() == str(os.getpid())
+
+
 def _write_terminal_failure(
     config: HarnessConfig | None,
     task: str,
@@ -1634,6 +1671,7 @@ def _write_terminal_failure(
     exc: BaseException,
     abort_reason: str,
     progress: _RunProgress | None = None,
+    resumed: bool = False,
 ) -> dict[str, Any]:
     """Best-effort local crash report and terminal event for the worker.
 
@@ -1656,10 +1694,15 @@ def _write_terminal_failure(
                 existing = parsed_existing
         except json.JSONDecodeError:
             pass
-    if isinstance(existing, dict) and existing.get("status") in {"complete", "completed", "cancelled", "failed", "blocked", "incomplete"}:
-        # A failure during a post-report remote sync must not erase a valid
-        # local authority.  The supervisor can still use the existing report.
-        return existing
+    if isinstance(existing, dict) and existing.get("status") in _TERMINAL_REPORT_STATUSES:
+        if not resumed or _report_is_current_generation(log_dir):
+            # A failure during a post-report remote sync must not erase a valid
+            # local authority.  The supervisor can still use the existing
+            # report.  On an in-place resume the exception is a terminal report
+            # inherited from the previous generation: reusing it would let a
+            # crashed resume report the predecessor's success, so the crash
+            # must win.
+            return existing
 
     trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     report: dict[str, Any] = {
@@ -1713,11 +1756,15 @@ def _write_terminal_failure(
             }
         )
     encoded = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    wrote_report = False
     for target in (report_path, role_report_path):
         try:
             _atomic_bytes_write(target, encoded.encode("utf-8"))
+            wrote_report = True
         except OSError:
             pass
+    if wrote_report:
+        _write_generation_stamp(log_dir)
     try:
         events_path = role_dir / "events.jsonl"
         if not any(item.get("event") == "role_harness_failed" for item in _read_jsonl_local(events_path)):

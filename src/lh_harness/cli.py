@@ -1788,7 +1788,13 @@ def _run_command(args: argparse.Namespace) -> int:
             "final_response_agent": build_role_agent("final_response"),
         }
     except BaseException as exc:
-        _write_bootstrap_failure(log_dir, task, exc, max_rounds=max_rounds)
+        _write_bootstrap_failure(
+                log_dir,
+                task,
+                exc,
+                max_rounds=max_rounds,
+                resume=bool(getattr(args, "resume", False)),
+            )
         print(f"Worker failed during agent setup: {exc}", file=sys.stderr)
         _finalize_embedded_supervisor(
             dashboard_supervisor,
@@ -2105,8 +2111,14 @@ def _public_role_configs_from_args(
     return result
 
 
-def _write_bootstrap_failure(log_dir: str, task: str, exc: BaseException, *, max_rounds: int) -> None:
+def _write_bootstrap_failure(
+    log_dir: str, task: str, exc: BaseException, *, max_rounds: int, resume: bool = False
+) -> None:
     """Persist a terminal report when agent construction fails before Manager."""
+
+    # Imported lazily, matching the ``run`` import above: manager pulls in the
+    # adapter stack that the CLI defers until after argument parsing.
+    from .manager import _write_generation_stamp
 
     root = Path(log_dir)
     role_dir = root / "role_orchestration"
@@ -2130,6 +2142,13 @@ def _write_bootstrap_failure(log_dir: str, task: str, exc: BaseException, *, max
             _atomic_bytes_write(target, encoded.encode("utf-8"))
         except OSError:
             pass
+    # A bootstrap crash after an in-place resume replaces the previous
+    # generation's terminal report; the stamp marks the new report as this
+    # generation's authority.  A bootstrap crash on a fresh run must not leave
+    # a stamp, because the crash path treats a matching stamp as proof that an
+    # on-disk report belongs to this process.
+    if resume:
+        _write_generation_stamp(root)
     events = role_dir / "events.jsonl"
     try:
         _append_jsonl_nofollow(events, {
