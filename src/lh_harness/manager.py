@@ -297,6 +297,7 @@ async def _run_impl(
             "resumed": bool(resume),
             "resumed_rounds": len(rounds),
         },
+        run_event_id=getattr(config, "run_id", None),
     )
     if resume:
         _append_event(
@@ -309,6 +310,7 @@ async def _run_impl(
                 "task_state_chars": len(current_task_state),
                 "task_contract_chars": len(current_task_contract),
             },
+            run_event_id=getattr(config, "run_id", None),
         )
         emit(
             "resumed",
@@ -388,6 +390,7 @@ async def _run_impl(
                 events_path,
                 "human_instructions_injected",
                 {"round": round_index, "chars": len(gate.carryover_instructions)},
+                run_event_id=getattr(config, "run_id", None),
             )
             gate.carryover_instructions = ""
 
@@ -397,6 +400,7 @@ async def _run_impl(
             events_path,
             "manager_round_start",
             {"round": round_index, "prompt_chars": len(manager_prompt)},
+            run_event_id=getattr(config, "run_id", None),
         )
         emit("role_start", round=round_index, role="manager")
 
@@ -423,6 +427,7 @@ async def _run_impl(
                     "phase": "manager",
                     **_episode_event_fields(manager_result, event_status="cancelled"),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             break
         manager_failure = classify_agent_runtime_failure(manager_result)
@@ -465,6 +470,7 @@ async def _run_impl(
                         error_message=manager_failure.user_message,
                     ),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             emit(
                 "role_done",
@@ -512,6 +518,7 @@ async def _run_impl(
                 "related_report_refs": related_report_refs,
                 **_episode_event_fields(manager_result, event_status="completed"),
             },
+            run_event_id=getattr(config, "run_id", None),
         )
         emit(
             "role_done",
@@ -655,6 +662,7 @@ async def _run_impl(
             events_path,
             "executor_role_start",
             {"round": round_index, "role": next_step, "prompt_chars": len(executor_prompt), "budget": _budget_to_dict(executor_budget)},
+            run_event_id=getattr(config, "run_id", None),
         )
         emit("role_start", round=round_index, role=f"{next_step}_executor")
 
@@ -704,6 +712,7 @@ async def _run_impl(
                     "phase": "executor",
                     **_episode_event_fields(executor_result, event_status="cancelled"),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             break
         executor_failure = classify_agent_runtime_failure(executor_result)
@@ -740,6 +749,7 @@ async def _run_impl(
                         error_message=executor_failure.user_message,
                     ),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             emit(
                 "role_done",
@@ -766,6 +776,7 @@ async def _run_impl(
                 "output_chars": len(executor_output),
                 **_episode_event_fields(executor_result, event_status="completed"),
             },
+            run_event_id=getattr(config, "run_id", None),
         )
         emit(
             "role_done",
@@ -795,6 +806,7 @@ async def _run_impl(
             events_path,
             "auditor_role_start",
             {"round": round_index, "role": next_step, "prompt_chars": len(auditor_prompt), "budget": _budget_to_dict(auditor_budget)},
+            run_event_id=getattr(config, "run_id", None),
         )
         emit("role_start", round=round_index, role=f"{next_step}_auditor")
 
@@ -843,6 +855,7 @@ async def _run_impl(
                     "phase": "auditor",
                     **_episode_event_fields(auditor_result, event_status="cancelled"),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             break
         auditor_failure = classify_agent_runtime_failure(auditor_result)
@@ -880,6 +893,7 @@ async def _run_impl(
                         error_message=auditor_failure.user_message,
                     ),
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             emit(
                 "role_done",
@@ -935,6 +949,7 @@ async def _run_impl(
                     "status": "cancelled",
                     "episode_status": repair_status,
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
             break
         _write_local(round_dir / "auditor_report.txt", auditor_report)
@@ -963,6 +978,7 @@ async def _run_impl(
                 "report_chars": len(auditor_report),
                 **_episode_event_fields(auditor_result, event_status="completed"),
             },
+            run_event_id=getattr(config, "run_id", None),
         )
         audit = parse_audit_report(auditor_report, round_index, language=config.prompt_language)
         emit(
@@ -1008,7 +1024,7 @@ async def _run_impl(
         json.dumps(final, ensure_ascii=False, indent=2),
     )
     await _write_remote_text(env, f"{config.harness_dir.rstrip('/')}/orchestration/orchestration_transcript.txt", transcript)
-    _append_event(events_path, "role_harness_done", final)
+    _append_event(events_path, "role_harness_done", final, run_event_id=config.run_id)
     emit(
         "run_done",
         status=final["status"],
@@ -1189,6 +1205,7 @@ async def _human_gate(ctx: _GateContext, outcome: str, round_index: int, task_st
                 "extra_rounds": extra,
                 "round_budget": ctx.round_budget,
             },
+            run_event_id=getattr(ctx.config, "run_id", None),
         )
     return False
 
@@ -1281,6 +1298,7 @@ async def _auditor_report_with_format_repair(
             "prompt_chars": len(repair_prompt),
             "budget": _budget_to_dict(repair_budget),
         },
+        run_event_id=getattr(config, "run_id", None),
     )
     repair_result = await _run_role_episode(
         format_repair_agent,
@@ -1312,6 +1330,7 @@ async def _auditor_report_with_format_repair(
             "report_chars": len(repair_raw_report),
             **_episode_event_fields(repair_result, event_status="completed"),
         },
+        run_event_id=getattr(config, "run_id", None),
     )
     if repair_valid:
         corrected = EpisodeResult(
@@ -1397,6 +1416,7 @@ async def _write_final_response(
         ctx.events_path,
         "final_response_start",
         {"round": round_index, "prompt_chars": len(prompt), "budget": _budget_to_dict(budget)},
+        run_event_id=getattr(ctx.config, "run_id", None),
     )
     ctx.emit("role_start", round=round_index, role="final_response")
 
@@ -1419,6 +1439,7 @@ async def _write_final_response(
                 "error": "episode_failed",
                 "status": "failed",
             },
+            run_event_id=getattr(ctx.config, "run_id", None),
         )
         ctx.emit("role_done", round=round_index, role="final_response", status="error")
         return False
@@ -1448,6 +1469,7 @@ async def _write_final_response(
             "response_chars": len(response),
             **_episode_event_fields(result, event_status="completed"),
         },
+        run_event_id=getattr(ctx.config, "run_id", None),
     )
     ctx.emit(
         "role_done",
@@ -1480,7 +1502,12 @@ async def _discard_final_response(ctx: _GateContext) -> None:
         await _write_remote_text(
             ctx.env, f"{ctx.config.harness_dir.rstrip('/')}/orchestration/final_response.txt", ""
         )
-    _append_event(ctx.events_path, "final_response_discarded", {"round": ctx.response_round})
+    _append_event(
+        ctx.events_path,
+        "final_response_discarded",
+        {"round": ctx.response_round},
+        run_event_id=getattr(ctx.config, "run_id", None),
+    )
 
 
 def _final_response_budget(budget: EpisodeBudget) -> EpisodeBudget:
@@ -1730,6 +1757,7 @@ def _write_terminal_failure(
                     "exception_type": type(exc).__name__,
                     "traceback_tail": trace[-4000:],
                 },
+                run_event_id=getattr(config, "run_id", None),
             )
     except OSError:
         pass
@@ -2342,7 +2370,7 @@ async def _record_round(
     rounds_jsonl = role_dir / "rounds.jsonl"
     _append_jsonl_nofollow(rounds_jsonl, asdict(record))
     await _write_remote_round_text(env, config, record.round_index, "round.json", payload)
-    _append_event(events_path, "managed_round_recorded", asdict(record))
+    _append_event(events_path, "managed_round_recorded", asdict(record), run_event_id=config.run_id)
 
 
 async def _ensure_remote_layout(env: Environment, config: HarnessConfig) -> None:
@@ -2397,7 +2425,20 @@ def _budget_to_dict(budget: EpisodeBudget) -> dict[str, int]:
     }
 
 
-def _append_event(path: Path, event: str, payload: dict[str, Any]) -> None:
+def _append_event(
+    path: Path,
+    event: str,
+    payload: dict[str, Any],
+    *,
+    run_event_id: str | None = None,
+) -> None:
+    """Append one event record.
+
+    ``run_event_id`` is the run identity readers validate event ids against.
+    The run loop passes ``config.run_id``; direct callers that predate the
+    config threading (tests, ad-hoc tools) keep the legacy path-derived
+    stamp.
+    """
     _ensure_dir_nofollow(path.parent)
     # Event ids are assigned while holding the file lock, so the same absolute
     # id survives snapshot truncation, REST replay, and a reconnect after an
@@ -2437,7 +2478,24 @@ def _append_event(path: Path, event: str, payload: dict[str, Any]) -> None:
                 fh.seek(0)
                 sequence = sum(1 for line in fh if line.strip()) + 1
                 fh.seek(0, 2)
-                run_id = path.parents[2].name if len(path.parents) > 2 else "local"
+                # Event ids must carry the run identity the dashboard/API
+                # validates them against. The worker has no access to that
+                # id, so the CLI threads it through the config (the reserved
+                # run id); without it, the log directory's parent is what
+                # ``run_web_server`` and the snapshot fallback derive from
+                # the filesystem. A custom ``--log-dir`` whose grandparent is
+                # unrelated to the run previously stamped ids with that stray
+                # path component, and every event was then rejected by
+                # readers ("event_id does not belong to the requested run")
+                # — an empty event feed for a healthy run.
+                if run_event_id is not None:
+                    run_id = run_event_id
+                else:
+                    run_id = (
+                        path.parents[2].name
+                        if len(path.parents) > 2
+                        else "local"
+                    )
                 record = {
                     "schema_version": 1,
                     "event_id": f"{run_id}:{sequence:06d}",

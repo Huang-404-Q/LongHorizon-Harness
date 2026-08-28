@@ -118,6 +118,13 @@ class HarnessConfig:
     workspace_path: str = DEFAULT_WORKSPACE_PATH
     harness_dir: str = DEFAULT_HARNESS_DIR
     log_dir: str = DEFAULT_LOG_DIR
+    # Reader-facing run identity for event ids. The dashboard/API derives a
+    # run's id from the run directory (the reserved id) and validates every
+    # event id against it; when a custom ``--log-dir`` moves the ledger
+    # outside ``<runs-root>/<run-id>/``, the directory's grandparent no longer
+    # equals that id, so the worker must be told which prefix readers expect.
+    # ``None`` keeps the legacy derivation from the event log's path.
+    run_id: str | None = None
     auditor_output_chars: int = 24_000
     role_verified_context_chars: int = 60_000
     role_history_chars: int = 100_000
