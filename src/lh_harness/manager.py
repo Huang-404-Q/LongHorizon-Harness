@@ -72,7 +72,6 @@ from .auditor_agent import (
 ROLE_VARIANT = "lh_harness_role_managed"
 logger = logging.getLogger(__name__)
 _MAX_SAVED_TRAJECTORY_BYTES = 16 * 1024 * 1024
-_MAX_FAILURE_REPORT_BYTES = 1 * 1024 * 1024
 _MAX_FAILURE_EVENTS_BYTES = 4 * 1024 * 1024
 _MAX_FAILURE_EVENT_RECORDS = 50_000
 
@@ -1003,11 +1002,12 @@ async def _run_impl(
         final_response=gate.final_response,
         failure_reason=gate.failure_reason,
     )
-    _write_local(role_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
-    _write_local(log_dir / "report.json", json.dumps(final, ensure_ascii=False, indent=2) + "\n")
-    # The crash path uses this stamp to tell this generation's report apart
-    # from a terminal report a resumed generation inherited from its run dir.
-    _write_generation_stamp(log_dir, _generation)
+    if _generation:
+        final["report_generation"] = _generation
+    encoded = json.dumps(final, ensure_ascii=False, indent=2) + "\n"
+    # The primary report is authoritative even if a later copy or sync fails.
+    _write_local(log_dir / "report.json", encoded)
+    _write_local(role_dir / "report.json", encoded)
     transcript = format_management_history(rounds, include_empty=True, max_chars=200_000)
     _write_local(role_dir / "orchestration_transcript.txt", transcript)
     _merge_episode_logs(log_dir)
@@ -1635,41 +1635,6 @@ def _read_local_bounded(path: Path, max_bytes: int, *, tail: bool = False) -> st
                 pass
 
 
-def _write_generation_stamp(log_dir: Path, generation: str) -> None:
-    """Record this invocation's generation token beside the report it wrote.
-
-    A supervised in-place resume reuses the run directory, so a stale
-    ``report.json`` from the previous generation can still be on disk when the
-    new generation crashes.  The stamp is what lets the crash path tell that
-    inherited report apart from one this generation actually produced.
-    """
-
-    if not generation:
-        return
-    try:
-        _write_local(log_dir / "report_generation.txt", generation)
-    except OSError:
-        pass
-
-
-def _report_is_current_generation(log_dir: Path, generation: str) -> bool:
-    """Whether the on-disk report was produced by this invocation.
-
-    The stamp is only written next to a report this invocation itself just
-    wrote, so a matching stamp is positive proof of authorship.  A missing or
-    unreadable stamp means the report predates this generation (the run was
-    resumed in place), which on the crash path must be replaced by the crash.
-    """
-
-    if not generation:
-        return False
-    try:
-        stamp = (log_dir / "report_generation.txt").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return stamp.strip() == generation
-
-
 def _write_terminal_failure(
     config: HarnessConfig | None,
     task: str,
@@ -1693,23 +1658,15 @@ def _write_terminal_failure(
     role_dir = log_dir / "role_orchestration"
     report_path = log_dir / "report.json"
     role_report_path = role_dir / "report.json"
-    existing: dict[str, Any] = {}
-    existing_text = _read_local_bounded(report_path, _MAX_FAILURE_REPORT_BYTES)
-    if existing_text is not None:
-        try:
-            parsed_existing = json.loads(existing_text)
-            if isinstance(parsed_existing, dict):
-                existing = parsed_existing
-        except json.JSONDecodeError:
-            pass
-    if isinstance(existing, dict) and existing.get("status") in {"complete", "completed", "cancelled", "failed", "blocked", "incomplete"}:
-        if _report_is_current_generation(log_dir, generation):
-            # A failure during a post-report remote sync must not erase a valid
-            # local authority.  The supervisor can still use the existing report.
+    if generation:
+        from .supervisor.service import _read_report
+
+        existing = _read_report(report_path)
+        if existing.get("report_generation") == generation and existing.get("status") in (
+            "complete", "completed", "cancelled", "failed", "blocked", "incomplete",
+        ):
+            # A later failure must not replace this invocation's valid primary report.
             return existing
-        # Otherwise the report is inherited from an earlier generation: a
-        # crashed resume must not report the predecessor's success, so the
-        # crash wins.
 
     trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
     report: dict[str, Any] = {
@@ -1762,16 +1719,14 @@ def _write_terminal_failure(
                 ),
             }
         )
-    encoded = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
-    wrote_report = False
+    if generation:
+        report["report_generation"] = generation
+    encoded = (json.dumps(report, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     for target in (report_path, role_report_path):
         try:
-            _atomic_bytes_write(target, encoded.encode("utf-8"))
-            wrote_report = True
+            _atomic_bytes_write(target, encoded)
         except OSError:
             pass
-    if wrote_report:
-        _write_generation_stamp(log_dir, generation)
     try:
         events_path = role_dir / "events.jsonl"
         if not any(item.get("event") == "role_harness_failed" for item in _read_jsonl_local(events_path)):

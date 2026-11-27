@@ -71,12 +71,10 @@ def test_terminal_failure_does_not_follow_log_directory_symlink(tmp_path: Path) 
 
 def _seed_report(log_dir: Path, status: str, generation: str | None) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / "report.json").write_text(
-        json.dumps({"status": status, "completion_satisfied": True}),
-        encoding="utf-8",
-    )
+    report = {"status": status, "completion_satisfied": True}
     if generation is not None:
-        (log_dir / "report_generation.txt").write_text(generation, encoding="utf-8")
+        report["report_generation"] = generation
+    (log_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
 
 
 def test_terminal_failure_replaces_inherited_report_on_resume(tmp_path: Path) -> None:
@@ -129,6 +127,79 @@ def test_terminal_failure_replaces_report_from_an_earlier_same_process_generatio
     )
 
     assert result["status"] == "failed"
+
+
+@pytest.mark.parametrize("fail_primary", [True, False], ids=["primary-write", "role-write"])
+def test_terminal_report_generation_tracks_primary_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_primary: bool
+) -> None:
+    from lh_harness import manager
+
+    log_dir = tmp_path / "logs"
+    _seed_report(log_dir, "complete", generation="previous")
+    primary = log_dir / "report.json"
+    role = log_dir / "role_orchestration" / "report.json"
+    real_write = manager._atomic_bytes_write
+    failed_target = primary if fail_primary else role
+
+    def fail_one_write(path: Path, data: bytes) -> None:
+        if path == failed_target:
+            raise OSError("simulated write failure")
+        real_write(path, data)
+
+    monkeypatch.setattr(manager, "_atomic_bytes_write", fail_one_write)
+    for attempt in (1, 2):
+        result = _write_terminal_failure(
+            SimpleNamespace(log_dir=str(log_dir), max_total_episodes=5),
+            "task",
+            status="failed",
+            reason=f"crash {attempt}",
+            exc=RuntimeError("boom"),
+            abort_reason="worker_exception",
+            generation="current",
+        )
+        assert result["status"] == "failed"
+
+    assert result["report_generation"] == "current"
+    installed = json.loads(primary.read_text(encoding="utf-8"))
+    if fail_primary:
+        assert installed["report_generation"] == "previous"
+        assert installed["status"] == "complete"
+    else:
+        assert installed == result
+        assert result["failure_reason"] == "crash 1"
+    assert not (log_dir / "report_generation.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_run_preserves_current_report_after_local_transcript_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lh_harness import manager
+
+    class BlockedAgent:
+        async def run_episode(self, _prompt, _env, _budget, live_trajectory_path=None):
+            return EpisodeResult(status="done", actions_log="Next: blocked\n\nReason:\nfixture")
+
+    def fail_merge(_log_dir: Path) -> None:
+        raise OSError("simulated transcript failure")
+
+    monkeypatch.setattr(manager, "_merge_episode_logs", fail_merge)
+    log_dir = tmp_path / "logs"
+    result = await run(
+        task="test terminal report persistence",
+        env=LocalEnvironment(str(tmp_path / "tmp")),
+        config=HarnessConfig(
+            max_total_episodes=1,
+            workspace_path=str(tmp_path / "workspace"),
+            harness_dir=str(tmp_path / "harness"),
+            log_dir=str(log_dir),
+        ),
+        agent=BlockedAgent(),
+    )
+    assert result["status"] == "blocked"
+    assert result["report_generation"]
+    assert json.loads((log_dir / "report.json").read_text(encoding="utf-8")) == result
 
 
 def test_role_result_writes_osworld_style_episode_with_dashboard_role_names(tmp_path: Path) -> None:
