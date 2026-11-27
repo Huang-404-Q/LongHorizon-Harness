@@ -247,8 +247,15 @@ def resolve_run_id(log_dir: str | Path) -> str:
     empty string so callers keep their historical path-derived fallback.
     """
 
-    path = Path(log_dir).expanduser()
+    # Import locally: supervisor.service also uses this module for run paths.
+    from ..supervisor.control_bus import _read_metadata_bytes
+
+    path = Path(log_dir).expanduser() / "run_id.txt"
     try:
-        return (path / "run_id.txt").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+        raw = _read_metadata_bytes(path, max_bytes=1024)
+        if raw is None:
+            return ""
+        name = raw.decode("utf-8").removesuffix("\n").removesuffix("\r")
+        return _component_name(name) or ""
+    except (OSError, UnicodeDecodeError):
         return ""

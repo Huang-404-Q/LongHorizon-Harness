@@ -431,3 +431,38 @@ def test_resolve_run_id_falls_back_for_legacy_logs(tmp_path: Path) -> None:
     log_dir.mkdir(parents=True)
 
     assert resolve_run_id(log_dir) == ""
+
+
+@pytest.mark.parametrize("data", [b"x" * 1025, b"x" * 129, b"invalid/id", b"\xff"])
+def test_resolve_run_id_rejects_invalid_metadata(tmp_path: Path, data: bytes) -> None:
+    from lh_harness.utils.run_boundary import resolve_run_id
+
+    (tmp_path / "run_id.txt").write_bytes(data)
+    assert resolve_run_id(tmp_path) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["complete", "failed", "cancelled"])
+async def test_run_restores_event_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    from asyncio import CancelledError
+
+    from lh_harness import manager
+
+    async def worker(**_kwargs):
+        assert manager._RUN_EVENT_ID.get() == "worker-id"
+        if status == "failed":
+            raise RuntimeError("fixture crash")
+        if status == "cancelled":
+            raise CancelledError
+        return {"status": "complete"}
+
+    monkeypatch.setattr(manager, "_run_impl", worker)
+    previous = manager._RUN_EVENT_ID.set("caller-id")
+    try:
+        result = await run(task="fixture", config=HarnessConfig(log_dir=str(tmp_path), run_id="worker-id"))
+        assert result["status"] == status
+        assert manager._RUN_EVENT_ID.get() == "caller-id"
+    finally:
+        manager._RUN_EVENT_ID.reset(previous)

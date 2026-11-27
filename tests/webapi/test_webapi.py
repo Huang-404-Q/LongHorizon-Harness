@@ -41,6 +41,64 @@ def _fixture(tmp_path: Path, *, control_enabled: bool = True) -> tuple[Path, Das
     return root, DashboardState(run / "logs", runs_root=root, control_enabled=control_enabled)
 
 
+@pytest.mark.asyncio
+async def test_standalone_server_replays_events_from_custom_log_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lh_harness.environment.local import LocalEnvironment
+    from lh_harness.manager import run
+    from lh_harness.types import EpisodeResult, HarnessConfig
+    from lh_harness.webapi.server import run_web_server
+
+    class BlockedAgent:
+        async def run_episode(self, _prompt, _env, _budget, live_trajectory_path=None):
+            return EpisodeResult(status="done", actions_log="Next: blocked\n\nReason:\nfixture")
+
+    log_dir = tmp_path / "custom" / "logs"
+    run_id = "reserved-id"
+    result = await run(
+        task="test standalone event replay",
+        env=LocalEnvironment(str(tmp_path / "tmp")),
+        config=HarnessConfig(
+            max_total_episodes=1,
+            workspace_path=str(tmp_path / "workspace"),
+            harness_dir=str(tmp_path / "harness"),
+            log_dir=str(log_dir),
+            run_id=run_id,
+        ),
+        agent=BlockedAgent(),
+    )
+    assert result["status"] == "blocked"
+
+    def check_asgi_app(app, **_options):
+        with TestClient(app, base_url="http://127.0.0.1") as client:
+            base = f"/api/runs/{run_id}"
+            snapshot = client.get(f"{base}/snapshot")
+            assert snapshot.status_code == 200
+            replay = client.get(f"{base}/events")
+            assert replay.status_code == 200
+            events = replay.json()["events"]
+            assert len(events) >= 2
+            assert all(event["event_id"].startswith(f"{run_id}:") for event in events)
+            page = client.get(f"{base}/events", params={"after": events[0]["event_id"]})
+            assert page.status_code == 200
+            assert page.json()["events"] == events[1:]
+            assert page.json()["resync_required"] is False
+
+            stream = f"ws://127.0.0.1{base}/stream"
+            with client.websocket_connect(stream) as socket:
+                assert socket.receive_json()["kind"] == "snapshot"
+                first = socket.receive_json()
+                assert first == {"kind": "event", "data": events[0]}
+            with client.websocket_connect(f"{stream}?after={events[0]['event_id']}") as socket:
+                assert socket.receive_json()["kind"] == "snapshot"
+                assert socket.receive_json() == {"kind": "event", "data": events[1]}
+
+    monkeypatch.delenv("LH_HARNESS_WEB_TOKEN", raising=False)
+    monkeypatch.setattr("uvicorn.run", check_asgi_app)
+    assert run_web_server(log_dir=log_dir) == 0
+
+
 def test_event_normalization_and_partial_tail(tmp_path: Path) -> None:
     event = normalize_event(
         {"ts": 1, "event": "manager_round_start", "round_index": 3},

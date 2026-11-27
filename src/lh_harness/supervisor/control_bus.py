@@ -428,22 +428,21 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
-def _read_json_file(path: Path, *, max_bytes: int = _MAX_CONTROL_RECORD_BYTES) -> dict[str, Any]:
-    """Read one control metadata file through a bounded no-follow fd."""
+def _read_metadata_bytes(path: Path, *, max_bytes: int) -> bytes | None:
+    """Read bounded metadata from a single-link regular file without following symlinks."""
 
     try:
         fd = _open_nofollow(path)
     except OSError:
-        return {}
+        return None
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1 or metadata.st_size > max_bytes:
-            return {}
+            return None
         raw = os.read(fd, max_bytes + 1)
-        if len(raw) > max_bytes:
-            return {}
+        return raw if len(raw) <= max_bytes else None
     except OSError:
-        return {}
+        return None
     finally:
         # Same tolerance as above: this poller runs for the whole run, so a
         # single stolen-descriptor EBADF must degrade to one empty poll, not
@@ -454,6 +453,14 @@ def _read_json_file(path: Path, *, max_bytes: int = _MAX_CONTROL_RECORD_BYTES) -
         except OSError as exc:
             if exc.errno != errno.EBADF:
                 raise
+
+
+def _read_json_file(path: Path, *, max_bytes: int = _MAX_CONTROL_RECORD_BYTES) -> dict[str, Any]:
+    """Read one control metadata file through a bounded no-follow fd."""
+
+    raw = _read_metadata_bytes(path, max_bytes=max_bytes)
+    if raw is None:
+        return {}
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):

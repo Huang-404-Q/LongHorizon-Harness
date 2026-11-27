@@ -144,6 +144,7 @@ async def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
     task = str(kwargs.get("task") or "")
     config = kwargs.get("config")
     run_progress = _RunProgress()
+    event_id_token = _RUN_EVENT_ID.set(getattr(config, "run_id", "") or None)
     try:
         return await _run_impl(*args, _run_progress=run_progress, **kwargs)
     except asyncio.CancelledError as exc:
@@ -169,6 +170,8 @@ async def run(*args: Any, **kwargs: Any) -> dict[str, Any]:
             abort_reason="worker_exception",
             progress=run_progress,
         )
+    finally:
+        _RUN_EVENT_ID.reset(event_id_token)
 
 
 async def _run_impl(
@@ -225,8 +228,6 @@ async def _run_impl(
         except Exception:  # progress reporting must never break a run
             logger.debug("progress callback failed for %s", event, exc_info=True)
 
-    # Event ids must carry the run identity readers validate them against.
-    _RUN_EVENT_ID.set(config.run_id or None)
     if config.run_id:
         # Persist it so a standalone reader (``lh-harness web --log-dir``) can
         # resolve the same identity instead of guessing from the path.
